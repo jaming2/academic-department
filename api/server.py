@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, render_template, request, redirect, session, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 import os
 import subprocess
@@ -89,16 +90,16 @@ def login_page():
         cur = conn.cursor()
 
         cur.execute(
-            'SELECT * FROM users WHERE username=%s AND password=%s',
-            (username, password)
+            'SELECT password FROM users WHERE username=%s',
+            (username,)
         )
 
-        user = cur.fetchone()
+        row = cur.fetchone()
 
         cur.close()
         conn.close()
 
-        if user:
+        if row and check_password_hash(row[0], password):
             session['username'] = username
             return redirect('/')
         else:
@@ -121,7 +122,7 @@ def signup_page():
 
             cur.execute(
                 'INSERT INTO users (username, password) VALUES (%s, %s)',
-                (username, password)
+                (username, generate_password_hash(password))
             )
 
             conn.commit()
