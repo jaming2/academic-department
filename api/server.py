@@ -1,66 +1,101 @@
-from flask import Flask, render_template, request, redirect, session
-import sqlite3
+from dotenv import load_dotenv
+load_dotenv()
+
+from flask import Flask, render_template, request, redirect, session, jsonify
+import psycopg2
 import os
+import subprocess
+import tempfile
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-template_dir = os.path.join(BASE_DIR, 'templates')
-static_dir = os.path.join(BASE_DIR, 'static')
-db_path = os.path.join(BASE_DIR, 'users.db')
-
-# 서버 시작 시 기존 DB 삭제
-if os.path.exists(db_path):
-    os.remove(db_path)
-
 app = Flask(
     __name__,
-    template_folder=template_dir,
-    static_folder=static_dir
+    template_folder=os.path.join(BASE_DIR, 'templates'),
+    static_folder=os.path.join(BASE_DIR, 'static')
 )
 
-app.secret_key = 'secret_key'
+app.secret_key = os.getenv('SECRET_KEY', 'change-this-secret-key')
 
-# 새 DB 생성
-conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL
-)
-''')
+# ✅ Supabase DATABASE_URL (네가 테스트 성공한 방식)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-conn.commit()
-conn.close()
 
+# 🔥 DB 연결 함수 (중복 제거 핵심)
+def get_conn():
+    return psycopg2.connect(
+        DATABASE_URL,
+        sslmode="require"
+    )
+
+
+# =========================
+# 초기 테이블 생성
+# =========================
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS solved_problems (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            study_name TEXT NOT NULL,
+            problem_number INTEGER NOT NULL
+        )
+    """)
+
+    # 기존 DB 자동 마이그레이션
+    cur.execute("""
+        ALTER TABLE solved_problems
+        ADD COLUMN IF NOT EXISTS study_name TEXT DEFAULT '2학기_1차_파이썬_스터디'
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+init_db()
+
+
+# =========================
+# ROUTES
+# =========================
 
 @app.route('/')
 def main_page():
-    username = session.get('username')
-    return render_template('main.html', username=username)
+    return render_template('main.html', username=session.get('username'))
 
 
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
-
     error = None
 
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        conn = get_conn()
+        cur = conn.cursor()
 
-        cursor.execute(
-            'SELECT * FROM users WHERE username=? AND password=?',
+        cur.execute(
+            'SELECT * FROM users WHERE username=%s AND password=%s',
             (username, password)
         )
 
-        user = cursor.fetchone()
+        user = cur.fetchone()
 
+        cur.close()
         conn.close()
 
         if user:
@@ -74,7 +109,6 @@ def login_page():
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup_page():
-
     error = None
 
     if request.method == 'POST':
@@ -82,20 +116,23 @@ def signup_page():
         password = request.form['password']
 
         try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
+            conn = get_conn()
+            cur = conn.cursor()
 
-            cursor.execute(
-                'INSERT INTO users (username, password) VALUES (?, ?)',
+            cur.execute(
+                'INSERT INTO users (username, password) VALUES (%s, %s)',
                 (username, password)
             )
 
             conn.commit()
+
+            cur.close()
             conn.close()
 
             return redirect('/login')
 
-        except:
+        except Exception as e:
+            print(e)
             error = '이미 존재하는 아이디입니다.'
 
     return render_template('signup.html', error=error)
@@ -107,9 +144,156 @@ def logout():
     return redirect('/')
 
 
+CURRENT_STUDY = '2학기_1차_파이썬_스터디'
+
 @app.route('/1st_python_study')
 def python_study_page():
-    return render_template('study.html')
+    if 'username' not in session:
+        return redirect('/login')
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        'SELECT problem_number FROM solved_problems WHERE username=%s AND study_name=%s',
+        (session['username'], CURRENT_STUDY)
+    )
+
+    solved = [row[0] for row in cur.fetchall()]
+
+    cur.close()
+    conn.close()
+
+    return render_template('study.html', solved=solved)
+
+
+@app.route('/submit_code', methods=['POST'])
+def submit_code():
+
+    if 'username' not in session:
+        return jsonify({'success': False})
+
+    data = request.get_json()
+
+    code = data.get('code', '')
+    problem_number = str(data.get('problem_number'))
+
+    judge_path = os.path.join(
+        BASE_DIR,
+        'api',
+        'study_judges',
+        CURRENT_STUDY,
+        f'{problem_number}번문제'
+    )
+
+    try:
+
+        testcase_numbers = []
+
+        for filename in os.listdir(judge_path):
+
+            if filename.endswith('_input.txt'):
+
+                number = (
+                    filename
+                    .replace('testcase', '')
+                    .replace('_input.txt', '')
+                )
+
+                testcase_numbers.append(number)
+
+        testcase_numbers.sort(key=int)
+
+        if not testcase_numbers:
+
+            return jsonify({
+                'success': False,
+                'message': '테스트케이스가 존재하지 않습니다.'
+            })
+
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix='.py',
+            delete=False,
+            encoding='utf-8'
+        ) as temp:
+
+            temp.write(code)
+            temp_path = temp.name
+
+        all_correct = True
+
+        for number in testcase_numbers:
+
+            input_path = os.path.join(
+                judge_path,
+                f'testcase{number}_input.txt'
+            )
+
+            output_path = os.path.join(
+                judge_path,
+                f'testcase{number}_output.txt'
+            )
+
+            with open(input_path, 'r', encoding='utf-8') as f:
+                test_input = f.read()
+
+            with open(output_path, 'r', encoding='utf-8') as f:
+                correct_answer = f.read().strip()
+
+            result = subprocess.run(
+                ['python', temp_path],
+                input=test_input,
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+
+            user_output = result.stdout.strip()
+
+            if user_output != correct_answer:
+                all_correct = False
+                break
+
+        if all_correct:
+
+            conn = get_conn()
+            cur = conn.cursor()
+
+            cur.execute(
+                '''
+                SELECT *
+                FROM solved_problems
+                WHERE username=%s
+                AND study_name=%s
+                AND problem_number=%s
+                ''',
+                (session['username'], CURRENT_STUDY, int(problem_number))
+            )
+
+            already = cur.fetchone()
+
+            if not already:
+                cur.execute(
+                    '''
+                    INSERT INTO solved_problems
+                    (username, study_name, problem_number)
+                    VALUES (%s, %s, %s)
+                    ''',
+                    (session['username'], CURRENT_STUDY, int(problem_number))
+                )
+                conn.commit()
+
+            cur.close()
+            conn.close()
+
+            return jsonify({'success': True})
+
+        return jsonify({'success': False})
+
+    except Exception as e:
+        print(e)
+        return jsonify({'success': False})
 
 
 if __name__ == '__main__':
