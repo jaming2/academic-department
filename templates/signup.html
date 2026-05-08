@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>회원가입</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <div class="auth-container">
+
+        <form class="auth-box" method="POST" autocomplete="off">
+
+            <h1>회원가입</h1>
+
+            <input
+                type="text"
+                name="username"
+                placeholder="아이디"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+                required
+            >
+
+            <input
+                type="password"
+                name="password"
+                placeholder="비밀번호"
+                autocomplete="new-password"
+                required
+            >
+
+            <button type="submit">회원가입</button>
+
+            <a href="/login">로그인 하러가기</a>
+
+        </form>
+
+    </div>
+
+    {% if error %}
+    <script>
+        alert("{{ error }}");
+    </script>
+    {% endif %}
+
+</body>
+</html>

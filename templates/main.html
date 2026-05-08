@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>코딩테스트 사이트</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <header>
+        <h1>코딩테스트 사이트</h1>
+
+        <nav>
+
+            {% if username %}
+
+                <div class="user-info">
+                    {{ username }} 님
+                </div>
+
+                <a href="/logout">로그아웃</a>
+
+            {% else %}
+
+                <a href="/login">로그인</a>
+                <a href="/signup">회원가입</a>
+
+            {% endif %}
+
+        </nav>
+    </header>
+
+    <main>
+        <section class="problem-section">
+            <h2>스터디 문제</h2>
+
+            <a href="/1st_python_study" class="problem-card">
+                <h3>2학기 1차 파이썬 스터디 문제</h3>
+                <p>파이썬 기초 및 알고리즘 문제 모음</p>
+            </a>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
